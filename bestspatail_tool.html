@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Smart Geo Map</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <!-- Leaflet CSS + JS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Turf.js -->
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+
+  <!-- Axios -->
+  <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+
+  <style>
+    body {
+      margin: 0;
+      background-color: #000;
+      color: #0ef;
+      font-family: 'Segoe UI', sans-serif;
+    }
+
+    #map {
+      height: 100vh;
+      z-index: 0;
+    }
+
+    .panel {
+      position: absolute;
+      background: #111;
+      border: 1px solid #0ef;
+      border-radius: 10px;
+      padding: 15px;
+      z-index: 1000;
+      width: 260px;
+      box-shadow: 0 0 15px #0ef;
+    }
+
+    .tool-panel {
+      top: 10px;
+      right: 10px;
+    }
+
+    .search-panel {
+      bottom: 10px;
+      left: 10px;
+    }
+
+    input {
+      width: 100%;
+      padding: 10px;
+      margin-top: 8px;
+      border-radius: 8px;
+      border: 1px solid #0ef;
+      background: #000;
+      color: #0ef;
+    }
+
+    .custom-button {
+      display: block;
+      width: 100%;
+      margin-top: 10px;
+      padding: 14px 0;
+      background: #0ef;
+      border: none;
+      border-radius: 40px;
+      font-size: 16px;
+      font-weight: 600;
+      color: #081b29;
+      text-align: center;
+      cursor: pointer;
+      box-shadow: 0 0 10px #0ef, 0 0 30px #0ef;
+      transition: 0.3s ease;
+      animation: slideTop 1s ease forwards;
+      animation-delay: 1s;
+      opacity: 0;
+    }
+
+    .custom-button:hover {
+      transform: scale(1.05);
+      box-shadow: 0 0 15px #0ef, 0 0 40px #0ef;
+    }
+
+    .output {
+      margin-top: 10px;
+      font-size: 14px;
+      color: #0ef;
+    }
+
+    @keyframes slideTop {
+      from {
+        transform: translateY(20px);
+        opacity: 0;
+      }
+      to {
+        transform: translateY(0);
+        opacity: 1;
+      }
+    }
+
+    /* Layer control top-left */
+    .leaflet-control-layers {
+      top: 10px !important;
+      left: 10px !important;
+      right: auto !important;
+    }
+  </style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<!-- Tool Panel -->
+<div class="panel tool-panel">
+  <b>Add Coordinate</b><br>
+  Lat: <input type="number" id="latInput" step="any"><br>
+  Lng: <input type="number" id="lngInput" step="any"><br>
+  <button class="custom-button" onclick="addPoint()">Add Point</button>
+
+  <hr style="margin: 15px 0; border: 1px solid #0ef;">
+
+  <b>Spatial Tools</b>
+  <button class="custom-button" onclick="runBuffer()">Buffer (10 km)</button>
+  <button class="custom-button" onclick="runDistance()">Distance (Last 2)</button>
+  <button class="custom-button" onclick="runArea()">Area (Polygon)</button>
+  <div class="output" id="output"></div>
+</div>
+
+<!-- Search Panel -->
+<div class="panel search-panel">
+  <b>Search Location</b>
+  <input type="text" id="placeInput" placeholder="Enter location">
+  <button class="custom-button" onclick="searchPlace()">Search</button>
+  <div class="output" id="searchOutput"></div>
+</div>
+
+<script>
+  const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors'
+  });
+
+  const googleSat = L.tileLayer('http://{s}.google.com/vt?lyrs=s&x={x}&y={y}&z={z}', {
+    maxZoom: 20,
+    subdomains: ['mt0', 'mt1', 'mt2', 'mt3']
+  });
+
+  const stadia = L.tileLayer('https://tiles.stadiamaps.com/tiles/alidade_satellite/{z}/{x}/{y}{r}.jpg', {
+    attribution: '&copy; Stadia Maps'
+  });
+
+  const map = L.map('map', {
+    center: [27.7, 85.3],
+    zoom: 8,
+    layers: [osm]
+  });
+
+  const baseMaps = {
+    "OpenStreetMap": osm,
+    "Google Satellite": googleSat,
+    "Stadia Satellite": stadia
+  };
+
+  L.control.layers(baseMaps, null, { position: 'topleft' }).addTo(map);
+
+  let userPoints = [];
+  let markers = [];
+  let bufferLayer, lineLayer, areaLayer;
+  let searchMarker;
+
+  function addPoint() {
+    const lat = parseFloat(document.getElementById("latInput").value);
+    const lng = parseFloat(document.getElementById("lngInput").value);
+
+    if (isNaN(lat) || isNaN(lng)) {
+      document.getElementById("output").innerText = "Invalid coordinates.";
+      return;
+    }
+
+    const point = [lng, lat];
+    userPoints.push(point);
+
+    const marker = L.marker([lat, lng]).addTo(map)
+      .bindPopup(`Point ${userPoints.length}<br>Lat: ${lat}, Lng: ${lng}`).openPopup();
+
+    markers.push(marker);
+    map.setView([lat, lng], 10);
+    document.getElementById("output").innerText = `Point ${userPoints.length} added.`;
+  }
+
+  function clearLayers() {
+    if (bufferLayer) map.removeLayer(bufferLayer);
+    if (lineLayer) map.removeLayer(lineLayer);
+    if (areaLayer) map.removeLayer(areaLayer);
+  }
+
+  function runBuffer() {
+    clearLayers();
+    if (userPoints.length < 1) {
+      document.getElementById("output").innerText = "Add at least 1 point.";
+      return;
+    }
+    const pt = turf.point(userPoints[userPoints.length - 1]);
+    const buffer = turf.buffer(pt, 10, { units: "kilometers" });
+    bufferLayer = L.geoJSON(buffer, { color: "cyan" }).addTo(map);
+    document.getElementById("output").innerText = "Buffer created (10 km).";
+  }
+
+  function runDistance() {
+    clearLayers();
+    if (userPoints.length < 2) {
+      document.getElementById("output").innerText = "Add at least 2 points.";
+      return;
+    }
+    const pt1 = turf.point(userPoints[userPoints.length - 2]);
+    const pt2 = turf.point(userPoints[userPoints.length - 1]);
+    const distance = turf.distance(pt1, pt2, { units: "kilometers" });
+
+    const latlngs = [
+      [pt1.geometry.coordinates[1], pt1.geometry.coordinates[0]],
+      [pt2.geometry.coordinates[1], pt2.geometry.coordinates[0]]
+    ];
+
+    lineLayer = L.polyline(latlngs, { color: "red" }).addTo(map);
+    document.getElementById("output").innerText = `Distance: ${distance.toFixed(2)} km`;
+  }
+
+  function runArea() {
+    clearLayers();
+    if (userPoints.length < 3) {
+      document.getElementById("output").innerText = "Need at least 3 points.";
+      return;
+    }
+    const coords = [...userPoints, userPoints[0]];
+    const polygon = turf.polygon([coords]);
+    const area = turf.area(polygon);
+    areaLayer = L.geoJSON(polygon, { color: "lime" }).addTo(map);
+    document.getElementById("output").innerText = `Area: ${(area / 10000).toFixed(2)} hectares`;
+  }
+
+  function searchPlace() {
+    const place = document.getElementById("placeInput").value;
+    if (!place) return;
+    axios.get(`https://nominatim.openstreetmap.org/search?format=json&q=${place}`)
+      .then(res => {
+        if (res.data.length === 0) {
+          document.getElementById("searchOutput").innerText = "Not found.";
+          return;
+        }
+        const result = res.data[0];
+        const lat = parseFloat(result.lat);
+        const lon = parseFloat(result.lon);
+
+        if (searchMarker) map.removeLayer(searchMarker);
+        searchMarker = L.marker([lat, lon])
+          .addTo(map)
+          .bindPopup(`<b>${result.display_name}</b>`)
+          .openPopup();
+
+        map.setView([lat, lon], 13);
+        document.getElementById("searchOutput").innerText = `Found: ${result.display_name}`;
+      })
+      .catch(() => {
+        document.getElementById("searchOutput").innerText = "Search error.";
+      });
+  }
+</script>
+</body>
+</html>
